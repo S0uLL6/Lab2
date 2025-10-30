@@ -1,3 +1,4 @@
+#include <iostream>
 #include <stdexcept>
 #include "Sequence.hpp"
 #include "lab2_cpp/Sequence.hpp"
@@ -222,4 +223,95 @@ int hashRange(const Range<T>& r) {
     long long x = a * 1315423911LL ^ (b * 2654435761LL);
     if (x < 0) x = -x;
     return (int)(x & 0x7fffffff);
+}
+
+// create bins for x-axis on histogram
+template <typename Key>
+ArraySequence< Range<Key> >* MakeUniformBins(Key minKey, Key maxKey, int binCount) {
+    if (binCount <= 0) throw std::invalid_argument("binCount must be > 0");
+    if (minKey > maxKey) throw std::invalid_argument("minKey must be <= maxKey");
+
+    ArraySequence< Range<Key> >* bins = new ArraySequence< Range<Key> >();
+    // assume Key has operator- and cast to int
+    Key width = static_cast<Key>(maxKey - minKey) / static_cast<Key>(binCount);
+    if (width == static_cast<Key>(0)) width = static_cast<Key>(1);
+
+    Key cur = minKey;
+
+    // assumes operator+ on Key
+    Key next = (binCount == 1) ? maxKey :static_cast<Key>(cur + width);
+    Range<Key> bin(cur, next);
+    bins->SetAt(0, bin);
+    cur = next;
+
+    for(int i = 1; i < binCount; ++i) {
+        Key next = (i == binCount - 1) ? maxKey :static_cast<Key>(cur + width);
+        Range<Key> bin(cur, next);
+        bins->Append(bin);
+        cur = next;
+    }
+    return bins;
+}
+
+template <typename Key, typename T>
+HashMap<Range<Key>, int >*
+BuildHistogram(ArraySequence<T>* seq, Key minKey, Key maxKey, int binCount) {
+    if (!seq) throw std::invalid_argument("Nothing to build from: seq is null");
+
+    ArraySequence< Range<Key> >* bins = MakeUniformBins<Key>(minKey, maxKey, binCount);
+    HashMap<Range<Key>, int >* dict = new HashMap<Range<Key>, int >(&hashRange<Key>);
+
+    // fill dict with ranges (bins) and 0's
+    size_t binLength = bins->GetLength();
+    for(size_t i = 0; i < binLength; ++i) {
+        Range<Key> bin = bins->Get(i);
+        dict->Set(bin, 0);
+    }
+
+    size_t n = seq->GetLength();
+    for(size_t i = 0; i < n; ++i) {
+        T item = seq->Get(i);
+        // assume operator<, > on T
+        for(size_t j = 0; j <binLength; ++j) {
+            Range<Key> bin = bins->Get(j);
+            if (bin.contains(item)) {
+                int cur = dict->Get(bin);
+                dict->Set(bin, cur + 1);
+                break;
+            }
+        }
+
+    }
+    delete bins;
+    return dict;
+}
+
+struct Person { int age; };
+// could write lambda to extract age from Person inside BuildHistogram
+// and pass lambda to the function (add argument to BuildHistogram)
+
+int main() {
+    auto* people = new ArraySequence<Person>();
+    for(int a = 0; a < 100; ++a) {
+        Person x{a};
+        people->Append(x);
+    }
+
+    // delete if lambda approach was chosen
+    auto* people_age = new ArraySequence<int>();
+    for(int a = 0; a < 100; ++a) {
+        people_age->Append(people->Get(a));
+    }
+
+    HashMap<Range<int>, int>* hashmap = BuildHistogram<int, int>(people_age, 0, 100, 10);
+    for(int i = 0; i < 10; ++i) {
+        Range<int> r { i * 10, (i + 1) * 10};
+        int c = hashmap->Get(r);
+        std::cout << "For range with start: " << r.lo << " and end: " << r.hi
+        << ", result is " << c << "\n";
+    }
+    delete hashmap;
+    delete people;
+    delete people_age;
+    return 0;
 }
