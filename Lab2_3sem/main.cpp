@@ -1,317 +1,449 @@
-#include <iostream>
-#include <stdexcept>
+// start.cpp
 #include "Sequence.hpp"
-#include "lab2_cpp/Sequence.hpp"
 
-int positive_mod(int a, int b) {
-    int r = a % b;
-    return (r < 0) ? (r + b) : r;
+#include <iostream>
+#include <new>
+#include <stdexcept>
+
+template <typename T>
+inline T MaxT(const T& a, const T& b) { return (a < b ? b : a); }
+
+template <typename T>
+inline T MinT(const T& a, const T& b) { return (b < a ? b : a); }
+
+static inline int positive_mod(int x, int m) {
+    int r = x % m;
+    return (r < 0) ? (r + m) : r;
 }
 
 template <typename TKey, typename TValue>
-struct Pair {
-    TKey key;
+struct KVPair {
+    TKey   key;
     TValue value;
 };
+
+// ------------------------------ IDictionary ----------------------------------
 
 template <typename TKey, typename TValue>
 class IDictionary {
 public:
-    virtual ~IDictionary() = default;
+    virtual ~IDictionary() {}
 
-    virtual TValue& Get(const TKey& key) = 0;
-    virtual bool Contains(const TKey& key) = 0;
-    virtual void Add(const TKey& key, const TValue& value) = 0;
-    virtual void Set(const TKey& key, const TValue& value) = 0;
-    virtual void Delete(const TKey& key) = 0;
+    virtual TValue& Get(const TKey& key) = 0;              // throw, если нет
+    virtual bool    ContainsKey(const TKey& key) = 0;
+    virtual void    Add(const TKey& key, const TValue& v) = 0;   // throw, если есть
+    virtual void    Set(const TKey& key, const TValue& v) = 0;   // upsert
+    virtual void    Remove(const TKey& key) = 0;           // throw, если нет
 
-    virtual int Size() = 0;
-    virtual int Capacity() = 0;
+    virtual int     GetCount() const = 0;
+    virtual int     GetCapacity() const = 0;
 };
+
+// ------------------------------ HashMap (закрытого типа, коллизии — последовательностями) ----
 
 template <typename TKey, typename TValue>
 class HashMap : public IDictionary<TKey, TValue> {
 public:
-    typedef Pair<TKey, TValue> KV;
+    typedef KVPair<TKey, TValue> KV;
 
-    HashMap(
-        int (*hash_func)(const TKey&),
-        int initial_cap = 31,
-        double grow_factor = 2.0,
-        double shrink_factor = 3.0,
-        double threshold = 0.7
-    ) : _hash(hash_func),
-        cap(initial_cap),
-        grow_factor(grow_factor),
-        shrink_factor(shrink_factor),
-        threshold(threshold)
+    // hashFn: пользовательская хеш-функция (обязательна)
+    // initial_capacity: число бакетов (>=1)
+    // p >= q > 1: параметры shrink/grow
+    HashMap(int (*hashFn)(const TKey&),
+            int initial_capacity = 25,
+            double p = 4.0,
+            double q = 2.0)
+    : _hash(hashFn), _count(0), _capacity(initial_capacity),
+    _p(p), _q(q)
     {
-        _buckets = new ArraySequence<ArraySequence<KV*>*>();
-        for(int i=0; i < cap; ++i) {
-            // TODO error prone
+        if (!_hash)                 throw std::invalid_argument("HashMap: hashFn is null");
+        if (_capacity < 1)          _capacity = 1;
+        if (!(_p >= _q && _q > 1))  throw std::invalid_argument("HashMap: require p >= q > 1");
+
+        _buckets = new ArraySequence< ArraySequence<KV*>* >();
+        // Растянем массив бакетов до _capacity, заполнив nullptr
+        _buckets->SetAt(0, (ArraySequence<KV*>*)nullptr);
+        // fill the rest
+        for (int i = 1; i < _capacity; ++i) {
             _buckets->Append((ArraySequence<KV*>*)nullptr);
         }
     }
 
     ~HashMap() {
+        // Удаляем содержимое бакетов и сами бакеты
         if (_buckets) {
             int n = _buckets->GetLength();
-            for(int i = 0; i < n; ++i) {
-                ArraySequence<KV*>* bucket = _buckets->Get(static_cast<size_t>(i));
-                if (bucket) {
-                    delete bucket;
+            for (int i = 0; i < n; ++i) {
+                ArraySequence<KV*>* bucket = _buckets->Get(i);
+                // new code
+                if (!bucket) continue;
+                const int m = bucket->GetLength();
+                for (int j = 0; j < m; ++j) {
+                    KV* kv = bucket->Get(j);
+                    if (kv) delete kv;
                 }
+                delete bucket;
             }
             delete _buckets;
         }
     }
 
+    // IDictionary
     TValue& Get(const TKey& key) override {
-        ArraySequence<KV*>* _bucket = _buckets->Get(bucket_index(key));
-        // add throw bucket not found
-        int idx = find_in_bucket(_bucket, key);
-        // potentially throw if idx < 0
-        return _bucket->Get(idx)->value;
-    };
+        int bi = bucket_index(key);
+        ArraySequence<KV*>* bucket = _buckets->Get(bi);
+        if (!bucket) throw std::out_of_range("Get: key not found (empty bucket)");
 
-    bool Contains(const TKey& key) override {
-        ArraySequence<KV*>* _bucket = _buckets->Get(bucket_index(key));
-        if (!_bucket) return false;
-        return bucket_index(_bucket, key) >= 0;
+        int idx = index_in_bucket(bucket, key);
+        if (idx < 0) throw std::out_of_range("Get: key not found");
+        return bucket->Get(idx)->value;
     }
 
-    void Add(const TKey& key, const TValue& value) override {
-        if(Contains(key)) throw std::invalid_argument("duplicate");
-        int idx = bucket_index(key);
-        ensure_bucket(idx);
-        insert_to_bucket(_buckets->Get(idx), key, value);
-        ++count;
+    bool ContainsKey(const TKey& key) override {
+        int bi = bucket_index(key);
+        ArraySequence<KV*>* bucket = _buckets->Get(bi);
+        if (!bucket) return false;
+        return index_in_bucket(bucket, key) >= 0;
+    }
 
-        if (count >= threshold * cap) {
-            // possible implicit cast
-            rehash(grow_factor * cap);
+    void Add(const TKey& key, const TValue& v) override {
+        if (ContainsKey(key)) throw std::invalid_argument("Add: duplicate key");
+
+        ensure_bucket(bucket_index(key));
+        insert_to_bucket(_buckets->Get(bucket_index(key)), key, v);
+        ++_count;
+
+        if (_count == _capacity) {
+            rehash(static_cast<int>(_capacity * _q)); // grow ×q
         }
     }
 
-    void Set(const TKey& key, const TValue& value) override {
+    void Set(const TKey& key, const TValue& v) override {
         int bi = bucket_index(key);
         ensure_bucket(bi);
         ArraySequence<KV*>* bucket = _buckets->Get(bi);
-        int idx = find_in_bucket(bucket, key);
-        if(idx >= 0) {
-            bucket->Get(static_cast<size_t>(idx))->value = value;
+        int idx = index_in_bucket(bucket, key);
+        if (idx >= 0) {
+            bucket->Get(idx)->value = v;
             return;
         }
-        insert_to_bucket(bucket, key, value);
-        ++count;
+        // не было — вставляем
+        insert_to_bucket(bucket, key, v);
+        ++_count;
 
-        if (count >= threshold * cap) {
-            // possible implicit cast
-            rehash(grow_factor * cap);
+        if (_count == _capacity) {
+            rehash(static_cast<int>(_capacity * _q)); // grow ×q
         }
-    };
-
-    void Delete(const TKey& key) override {
-        int bi = bucket_index(key);
-        ArraySequence<KV*>* bucket = _buckets->Get(bi);
-        // can we delete unexisting element?
-        if(!bucket) return;
-        int idx = find_in_bucket(bucket, key);
-        if(idx >= 0) {
-            bucket->Delete(static_cast<size_t>(idx));
-            --count;
-        }
-        if (count <= (1 - threshold) * cap) {
-            // possible implicit cast
-            rehash(cap / shrink_factor);
-        }
-    };
-
-    int Size() override {return count;}
-    int Capacity() override {return cap;}
-
-private:
-    ArraySequence<ArraySequence<KV*>*>* _buckets;
-    int (*_hash)(const TKey&);
-    int count;
-    int cap;
-    double grow_factor;
-    double shrink_factor;
-    double threshold;
-
-    int bucket_index(const TKey& key) {
-        int h = _hash(key);
-        return positive_mod(h, cap);
     }
 
-    // potentially improve to binary (now linear)
-    int find_in_bucket(ArraySequence<KV*>* bucket, const TKey& key) {
-        size_t n = bucket->GetLength();
-        for(size_t i = 0; i < n; ++i) {
-            // assumes operator== on TKey
-            if(bucket->Get(i)->key == key) return i;
+    void Remove(const TKey& key) override {
+        int bi = bucket_index(key);
+        ArraySequence<KV*>* bucket = _buckets->Get(bi);
+        if (!bucket) throw std::out_of_range("Remove: key not found");
+
+        int m = bucket->GetLength();
+        for (int i = 0; i < m; ++i) {
+            if (equal_keys(bucket->Get(i)->key, key)) {
+                // new code
+                KV* victim = bucket->Get(i);
+                delete victim;
+                bucket->SetAt(i, nullptr);
+                bucket->Delete(i);
+                --_count;
+
+                // shrink при n ≤ c/p
+                if (_count <= static_cast<int>(_capacity / _p) && _capacity > 1) {
+                    int newCap = static_cast<int>(_capacity / _q);
+                    if (newCap < 1) newCap = 1;
+                    rehash(newCap);
+                }
+                return;
+            }
+        }
+        throw std::out_of_range("Remove: key not found");
+    }
+
+    int GetCount() const override    { return _count; }
+    int GetCapacity() const override { return _capacity; }
+
+private:
+    ArraySequence< ArraySequence<KV*>* >* _buckets = nullptr;
+    int (*_hash)(const TKey&);
+    int _count;
+    int _capacity;
+    double _p;
+    double _q;
+
+    // Хеш в индекс бакета
+    int bucket_index(const TKey& key) const {
+        int h = _hash(key);
+        return positive_mod(h, _capacity);
+    }
+
+    static bool equal_keys(const TKey& a, const TKey& b) {
+        // Требуется оператор== у ключа
+        return (a == b);
+    }
+
+    // Линейный поиск в бакете
+    static int index_in_bucket(ArraySequence<KV*>* bucket, const TKey& key) {
+        int n = bucket->GetLength();
+        for (int i = 0; i < n; ++i) {
+            // guard agains nulls
+            KV* kv = bucket->Get(i);
+            if (kv && equal_keys(kv->key, key)) return i;
         }
         return -1;
     }
 
-    void ensure_bucket(int idx) {
-        ArraySequence<KV*>* _bucket = _buckets->Get(idx);
-        if(!_bucket) {
-            // error prone
-            _bucket = new ArraySequence<KV*>*();
-            _buckets->Delete(idx);
-            _buckets->InsertAt(_bucket, idx);
+    void ensure_bucket(int bi) {
+        ArraySequence<KV*>* bucket = _buckets->Get(bi);
+        if (!bucket) {
+            bucket = new ArraySequence<KV*>();
+            // new code
+            bucket->SetAt(0, (KV*)nullptr);
+            _buckets->SetAt(static_cast<size_t>(bi), bucket);
         }
     }
 
-    void insert_to_bucket(ArraySequence<KV*>* _bucket, const TKey& key, const TValue& value) {
-        // potentially add smart pointers
-        KV* node = new KV{ key, value };
-        _bucket->Append(node);
-        delete node;
+    static void insert_to_bucket(ArraySequence<KV*>* bucket,
+                                 const TKey& key,
+                                 const TValue& v)
+    {
+        // Вставка в конец
+        KV* node = new KV{ key, v };
+        if (bucket->GetLength() >= 1 && bucket->Get(0) == nullptr) {
+            bucket->SetAt(0, node);
+        } else {
+            bucket->Append(node);
+        }
+        // Так как ArraySequence<KV> хранит элементы по значению,
+        // удобнее Append именно значением. Но по твоим сигнатурам
+        // используется Append(T*). Тогда перегоняем через копию:
+        // DO NOT delete node here — bucket owns it now.  <-- FIX
+        // delete node;
     }
 
-    void rehash(int newCap) {
-        if (newCap < 1) newCap = 1;
+    void rehash(int newCapacity) {
+        if (newCapacity < 1) newCapacity = 1;
 
-        ArraySequence<ArraySequence<KV*>*>* old = _buckets;
-        int oldCap = cap;
+        // Сохраняем старые бакеты
+        ArraySequence< ArraySequence<KV*>* >* old = _buckets;
+        int oldCap = _capacity;
 
-        cap = newCap;
-        _buckets = new ArraySequence<ArraySequence<KV*>*>();
-        for(int i=0; i < cap; ++i) {
-            // TODO error prone
+        // Создаем новые
+        _capacity = newCapacity;
+        _buckets = new ArraySequence< ArraySequence<KV*>* >();
+        _buckets->SetAt(0, (ArraySequence<KV*>*)nullptr);
+        // fill the rest
+        for (int i = 1; i < _capacity; ++i) {
             _buckets->Append((ArraySequence<KV*>*)nullptr);
         }
 
-        for(size_t i = 0; i < oldCap; ++i) {
-            ArraySequence<KV>* _bucket = old->Get(i);
-            if(!_bucket) continue;
+        // Пересыпаем
+        for (int i = 0; i < oldCap; ++i) {
+            ArraySequence<KV*>* bucket = old->Get(i);
+            if (!bucket) continue;
 
-            size_t n = _bucket->GetLength();
-            for(size_t j = 0; j < n; ++j) {
-                KV* kv = _bucket->Get(j);
-                int bi = bucket_index(kv->key);
+            int m = bucket->GetLength();
+            for (int j = 0; j < m; ++j) {
+                // move
+                KV* kv = bucket->Get(j);
+                const int bi = bucket_index(kv->key);
                 ensure_bucket(bi);
-                insert_to_bucket(_buckets->Get(bi), kv->key, kv->value);
+                _buckets->Get(bi)->Append(kv);
+                bucket->SetAt(j, nullptr);
             }
-            delete _bucket;
+            delete bucket;
         }
         delete old;
+
+        // _count не меняется
     }
 };
+
+// ------------------------------ Диапазон (бин) -------------------------------
 
 template <typename T>
 struct Range {
-    T lo;
-    T hi;
-
-    bool contains(const T& x) {
-        return ((lo <= x) && (x <= hi));
+    T lo; // inclusive
+    T hi; // exclusive
+    bool contains(const T& x) const {
+        // [lo, hi)
+        return !(x < lo) && (x < hi);
     }
-
-    bool operator==(const Range& other) {
-        // assume discrete numbers, intervals are only closed
-        return ((lo == lo) && (hi == hi));
+    bool operator==(const Range& o) const {
+        return !(lo < o.lo) && !(o.lo < lo) && !(hi < o.hi) && !(o.hi < hi);
     }
 };
 
-template<typename T>
-int hashRange(const Range<T>& r) {
-    long long a = static_cast<long long>(r.lo);
-    long long b = static_cast<long long>(r.hi);
+// Хеш для Range<T> (упрощённый; без STL)
+template <typename T>
+int HashRange(const Range<T>& r) {
+    // Требуется, чтобы у T были преобразования к целому (или перегрузка для double/int).
+    long long a = (long long)r.lo;
+    long long b = (long long)r.hi;
     long long x = a * 1315423911LL ^ (b * 2654435761LL);
     if (x < 0) x = -x;
     return (int)(x & 0x7fffffff);
 }
 
-// create bins for x-axis on histogram
+// Построение по Sequence<T> и равномерным бинам в [minVal, maxVal) по проектору:
+//   Key Projector(const T&)
+// Возвращает IDictionary<Range<Key>, int>*.
+
+template <typename T, typename Key>
+struct HistogramParams {
+    Key minVal;
+    Key maxVal;
+    int binCount;
+    Key (*Projector)(const T&); // указатель на функцию-проектор
+};
+
+// Создание равномерных бинов
 template <typename Key>
-ArraySequence< Range<Key> >* MakeUniformBins(Key minKey, Key maxKey, int binCount) {
+ArraySequence< Range<Key> >* MakeUniformBins(Key minVal, Key maxVal, int binCount) {
     if (binCount <= 0) throw std::invalid_argument("binCount must be > 0");
-    if (minKey > maxKey) throw std::invalid_argument("minKey must be <= maxKey");
+    if (!(minVal <= maxVal)) throw std::invalid_argument("minVal must be <= maxVal");
 
     ArraySequence< Range<Key> >* bins = new ArraySequence< Range<Key> >();
-    // assume Key has operator- and cast to int
-    Key width = static_cast<Key>(maxKey - minKey) / static_cast<Key>(binCount);
-    if (width == static_cast<Key>(0)) width = static_cast<Key>(1);
+    // Ширина (для целых типов делим поровну, последний бин — до maxVal)
+    Key width = (Key)((maxVal - minVal) / (Key)binCount);
+    if (width <= (Key)0) width = (Key)1;
 
-    Key cur = minKey;
+    Key cur = minVal;
+    // first bin at slot 0
+    {
+        Key next = (binCount == 1) ? maxVal : (Key)(cur + width);
+        Range<Key> bin{ cur, next };
+        bins->SetAt(0, bin);                // use existing slot 0
+        cur = next;
+    }
 
-    // assumes operator+ on Key
-    Key next = (binCount == 1) ? maxKey :static_cast<Key>(cur + width);
-    Range<Key> bin(cur, next);
-    bins->SetAt(0, bin);
-    cur = next;
-
-    for(int i = 1; i < binCount; ++i) {
-        Key next = (i == binCount - 1) ? maxKey :static_cast<Key>(cur + width);
-        Range<Key> bin(cur, next);
+    // remaining bins
+    for (int i = 1; i < binCount; ++i) {
+        Key next = (i == binCount - 1) ? maxVal : (Key)(cur + width);
+        Range<Key> bin{ cur, next };
         bins->Append(bin);
         cur = next;
     }
     return bins;
 }
 
-template <typename Key, typename T>
-HashMap<Range<Key>, int >*
-BuildHistogram(ArraySequence<T>* seq, Key minKey, Key maxKey, int binCount) {
-    if (!seq) throw std::invalid_argument("Nothing to build from: seq is null");
+template <typename T, typename Key>
+IDictionary< Range<Key>, int >*
+BuildHistogram(ArraySequence<T>* seq, const HistogramParams<T,Key>& par) {
+    if (!seq) throw std::invalid_argument("BuildHistogram: seq is null");
+    if (!par.Projector) throw std::invalid_argument("BuildHistogram: projector is null");
+    if (par.binCount <= 0) throw std::invalid_argument("BuildHistogram: binCount <= 0");
 
-    ArraySequence< Range<Key> >* bins = MakeUniformBins<Key>(minKey, maxKey, binCount);
-    HashMap<Range<Key>, int >* dict = new HashMap<Range<Key>, int >(&hashRange<Key>);
+    // Бины
+    ArraySequence< Range<Key> >* bins = MakeUniformBins<Key>(par.minVal, par.maxVal, par.binCount);
 
-    // fill dict with ranges (bins) and 0's
-    size_t binLength = bins->GetLength();
-    for(size_t i = 0; i < binLength; ++i) {
+    // Словарь: ключ — Range<Key>, значение — int
+    HashMap< Range<Key>, int >* dict =
+    new HashMap< Range<Key>, int >(&HashRange<Key>, MaxT(25, par.binCount*2), 4.0, 2.0);
+
+    // Инициализируем нулями для детерминированного вывода
+    int B = bins->GetLength();
+    for (int i = 0; i < B; ++i) {
         Range<Key> bin = bins->Get(i);
         dict->Set(bin, 0);
     }
 
-    size_t n = seq->GetLength();
-    for(size_t i = 0; i < n; ++i) {
+    // Проход по данным
+    int n = seq->GetLength();
+    for (int i = 0; i < n; ++i) {
         T item = seq->Get(i);
-        // assume operator<, > on T
-        for(size_t j = 0; j <binLength; ++j) {
+        Key value = par.Projector(item);
+
+        // Линейный поиск бина
+        for (int j = 0; j < B; ++j) {
             Range<Key> bin = bins->Get(j);
-            if (bin.contains(item)) {
+            if (bin.contains(value)) {
                 int cur = dict->Get(bin);
                 dict->Set(bin, cur + 1);
                 break;
             }
         }
-
     }
+
     delete bins;
     return dict;
 }
 
+// ------------------------------ Пример -----------------
 struct Person { int age; };
 // could write lambda to extract age from Person inside BuildHistogram
 // and pass lambda to the function (add argument to BuildHistogram)
+static int ProjectAge(const Person& p) { return p.age; }
 
 int main() {
-    auto* people = new ArraySequence<Person>();
-    for(int a = 0; a < 100; ++a) {
-        Person x{a};
-        people->Append(x);
-    }
+    try {
+        // 1) Build sample data
+        auto* people = new ArraySequence<Person>();
+        for (int a = 0; a < 100; ++a) {
+            people->Append(Person{a});
+        }
 
-    // delete if lambda approach was chosen
-    auto* people_age = new ArraySequence<int>();
-    for(int a = 0; a < 100; ++a) {
-        people_age->Append(people->Get(a));
-    }
+        // 2) Histogram params
+        HistogramParams<Person,int> hp;
+        hp.minVal = 0; hp.maxVal = 100; hp.binCount = 10;
+        hp.Projector = &ProjectAge;
 
-    HashMap<Range<int>, int>* hashmap = BuildHistogram<int, int>(people_age, 0, 100, 10);
-    for(int i = 0; i < 10; ++i) {
-        Range<int> r { i * 10, (i + 1) * 10};
-        int c = hashmap->Get(r);
-        std::cout << "For range with start: " << r.lo << " and end: " << r.hi
-        << ", result is " << c << "\n";
+        // 3) Build histogram
+        IDictionary< Range<int>, int >* H = BuildHistogram<Person,int>(people, hp);
+
+        // 4) Recreate the same bins for printing
+        ArraySequence< Range<int> >* bins = MakeUniformBins<int>(hp.minVal, hp.maxVal, hp.binCount);
+
+        // 5) Read counts & find maximum (for bar scaling)
+        int total = 0;
+        int maxCount = 0;
+        for (int i = 0; i < (int)bins->GetLength(); ++i) {
+            Range<int> bin = bins->Get(i);
+            int c = 0;
+            if (H->ContainsKey(bin)) c = H->Get(bin);
+            total += c;
+            if (c > maxCount) maxCount = c;
+        }
+
+        // 6) Print table header
+        std::cout << "Histogram of ages (" << hp.minVal << "–" << hp.maxVal
+        << "), " << hp.binCount << " bins\n";
+        std::cout << "Total items: " << total << "\n\n";
+        std::cout << "Bin range         Count   Bar\n";
+        std::cout << "----------------  ------  -----------------------------------------------\n";
+
+        // 7) Print each bin with an ASCII bar (scaled to 50 chars)
+        const int BAR_WIDTH = 50;
+        for (int i = 0; i < static_cast<int>(bins->GetLength()); ++i) {
+            Range<int> bin = bins->Get(i);
+            int c = 0;
+            if (H->ContainsKey(bin)) c = H->Get(bin);
+
+            int barLen = (maxCount > 0) ? (c * BAR_WIDTH) / maxCount : 0;
+            std::cout.width(5);
+            std::cout << bin.lo << "–";
+            std::cout.width(5);
+            std::cout << bin.hi << "   ";
+
+            std::cout.width(6);
+            std::cout << c << "   ";
+
+            for (int k = 0; k < barLen; ++k) std::cout << '#';
+            std::cout << "\n";
+        }
+
+        // 8) Clean up
+        delete bins;
+        delete H;
+        delete people;
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
     }
-    delete hashmap;
-    delete people;
-    delete people_age;
-    return 0;
 }
+

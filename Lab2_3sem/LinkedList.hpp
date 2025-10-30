@@ -2,13 +2,13 @@ using namespace std;
 
 template <typename T> struct Node {
     T data;
-    Node* next;
-    Node(T data, Node* next = nullptr) : data(data), next(next) {}
+    Node<T>* next;
+    Node(T data, Node<T>* next = nullptr) : data(data), next(next) {}
 };
 
 template <typename T> class LinkedList {
 private:
-    Node* head;
+    Node<T>* head;
     size_t length;
 
 public:
@@ -20,7 +20,7 @@ public:
     }
 
     LinkedList(const LinkedList<T>& other) : head(nullptr), length(0) {
-        Node* current = other.head;
+        Node<T>* current = other.head;
         while (current) {
             Append(current->data);
             current = current->next;
@@ -28,9 +28,9 @@ public:
     }
 
     ~LinkedList() {
-        Node* current = head;
+        Node<T>* current = head;
         while (current) {
-            Node* next = current->next;
+            Node<T>* next = current->next;
             delete current;
             current = next;
         }
@@ -43,14 +43,14 @@ public:
 
     T GetLast() const {
         if (!head) throw out_of_range("List is empty");
-        Node* temp = head;
+        Node<T>* temp = head;
         while (temp->next) temp = temp->next;
         return temp->data;
     }
 
     T Get(size_t index) const {
         if (index >= length) throw out_of_range("Index out of range");
-        Node* temp = head;
+        Node<T>* temp = head;
         for (size_t i = 0; i < index; i++) temp = temp->next;
         return temp->data;
     }
@@ -58,7 +58,7 @@ public:
     LinkedList<T>* GetSubList(size_t start, size_t end) const {
         if (start > end || end >= length) throw out_of_range("Invalid sublist indices");
         LinkedList<T>* sublist = new LinkedList<T>();
-        Node* temp = head;
+        Node<T>* temp = head;
         for (size_t i = 0; i <= end; i++) {
             if (i >= start) sublist->Append(temp->data);
             temp = temp->next;
@@ -72,17 +72,17 @@ public:
 
     void Append(T item) {
         if (!head) {
-            head = new Node(item);
+            head = new Node<T>(item);
         } else {
-            Node* temp = head;
+            Node<T>* temp = head;
             while (temp->next) temp = temp->next;
-            temp->next = new Node(item);
+            temp->next = new Node<T>(item);
         }
         length++;
     }
 
     void Prepend(T item) {
-        head = new Node(item, head);
+        head = new Node<T>(item, head);
         length++;
     }
 
@@ -92,15 +92,15 @@ public:
             Prepend(item);
             return;
         }
-        Node* temp = head;
+        Node<T>* temp = head;
         for (size_t i = 0; i < index - 1; i++) temp = temp->next;
-        temp->next = new Node(item, temp->next);
+        temp->next = new Node<T>(item, temp->next);
         length++;
     }
 
     LinkedList<T>* Concat(LinkedList<T>* list) const {
         LinkedList<T>* result = new LinkedList<T>(*this);
-        Node* temp = list->head;
+        Node<T>* temp = list->head;
         while (temp) {
             result->Append(temp->data);
             temp = temp->next;

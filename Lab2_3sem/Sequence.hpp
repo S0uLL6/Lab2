@@ -1,3 +1,4 @@
+#pragma once
 #include "DynamicArray.hpp"
 #include "LinkedList.hpp"
 
@@ -5,10 +6,11 @@ template <typename T> class Container {
 public:
     virtual T Get(size_t index) const = 0;
     virtual size_t GetLength() const = 0;
-    virtual ~Sequence() {}
+    virtual ~Container() {}
 protected:
     Container() = default;
-    Container(Container<T>* other) = default;
+    // Container(Container<T>* other) = default;
+    Container(const Container<T>& other) = default;
 };
 
 template <typename T> class Sequence : public Container<T> {
@@ -25,7 +27,7 @@ public:
     virtual ~Sequence() {}
 protected:
     Sequence() = default;
-    Sequence(SequenceT>* other) : Container<T>(other) {};
+    Sequence(Sequence<T>* other) : Container<T>(other) {};
 };
 
 template <typename T> class ArraySequence : public Sequence<T> {
@@ -33,7 +35,7 @@ private:
     DynamicArray<T> data;
 
 public:
-    ArraySequence() : data(0) {}
+    ArraySequence() : data(1) {}
 
     ArraySequence(const T* items, size_t count) : data(items, count) {}
 
@@ -42,6 +44,9 @@ public:
             data.Set(i, list.Get(i));
         }
     }
+
+    // NEW
+    explicit ArraySequence(const DynamicArray<T>& arr) : data(arr) {}
 
     T GetFirst() const override {
         return data.Get(0);
@@ -130,6 +135,26 @@ public:
     double Norm() const  {
         return data.Norm();
     }
+
+    T& GetRef(size_t index) {
+        return data.GetRef(index); // DynamicArray<T> возврат T& на буфер[index]
+    }
+    const T& GetRef(size_t index) const {
+        return data.GetRef(index);
+    }
+
+    void SetAt(size_t index, const T& item) {
+        data.Set(index, item);
+    }
+
+    void Delete(size_t index) {
+        size_t n = data.GetSize();
+        if (index >= n) throw std::out_of_range("Index out of range");
+        // сдвиг влево
+        for (size_t i = index; i + 1 < n; ++i)
+            data.Set(i, data.Get(i + 1));
+        data.Resize(n - 1);
+    }
 };
 
 template <typename T> class ListSequence : public Sequence<T> {
@@ -184,46 +209,6 @@ public:
     }
 };
 
-template <class T> class MutableArraySequence : public ArraySequence<T> {
-public:
-    using ArraySequence<T>::ArraySequence;
-    Sequence<T>* Append(T item) override {
-        ArraySequence<T>::Append(item); 
-        return this;
-    }
-
-    Sequence<T>* Prepend(T item) override {
-        ArraySequence<T>::Prepend(item); 
-        return this;
-    }
-
-    Sequence<T>* InsertAt(T item, int index) override {
-        ArraySequence<T>::InsertAT(item, index); 
-        return this;
-    }
-};
-
-template <class T> class ImmutableArraySequence : public ArraySequence<T> {
-public:
-    using ArraySequence<T>::ArraySequence;
-    Sequence<T>* Append(T item) override {
-        ArraySequence<T>* clon = new ArraySequence<T>(*this);
-        clon->Append(item); 
-        return this;
-    }
-
-    Sequence<T>* Prepend(T item) override {
-        ArraySequence<T>* clon = new ArraySequence<T>(*this);
-        clon->Prepend(item); 
-        return this;
-    }
-
-    Sequence<T>* InsertAt(T item, int index) override {
-        ArraySequence<T>* clon = new ArraySequence<T>(*this);
-        clon->InsertAt(item, index); 
-        return this;
-    }
-};
 
 template <typename T> class MutableArraySequence : public ArraySequence<T> {
 public:
