@@ -1,4 +1,3 @@
-// start.cpp
 #include "Sequence.hpp"
 
 #include <iostream>
@@ -22,8 +21,6 @@ struct KVPair {
     TValue value;
 };
 
-// ------------------------------ IDictionary ----------------------------------
-
 template <typename TKey, typename TValue>
 class IDictionary {
 public:
@@ -39,16 +36,11 @@ public:
     virtual int     GetCapacity() const = 0;
 };
 
-// ------------------------------ HashMap (закрытого типа, коллизии — последовательностями) ----
-
 template <typename TKey, typename TValue>
 class HashMap : public IDictionary<TKey, TValue> {
 public:
     typedef KVPair<TKey, TValue> KV;
 
-    // hashFn: пользовательская хеш-функция (обязательна)
-    // initial_capacity: число бакетов (>=1)
-    // p >= q > 1: параметры shrink/grow
     HashMap(int (*hashFn)(const TKey&),
             int initial_capacity = 25,
             double p = 4.0,
@@ -217,11 +209,6 @@ private:
         } else {
             bucket->Append(node);
         }
-        // Так как ArraySequence<KV> хранит элементы по значению,
-        // удобнее Append именно значением. Но по твоим сигнатурам
-        // используется Append(T*). Тогда перегоняем через копию:
-        // DO NOT delete node here — bucket owns it now.  <-- FIX
-        // delete node;
     }
 
     void rehash(int newCapacity) {
@@ -262,8 +249,6 @@ private:
     }
 };
 
-// ------------------------------ Диапазон (бин) -------------------------------
-
 template <typename T>
 struct Range {
     T lo; // inclusive
@@ -287,10 +272,6 @@ int HashRange(const Range<T>& r) {
     if (x < 0) x = -x;
     return (int)(x & 0x7fffffff);
 }
-
-// Построение по Sequence<T> и равномерным бинам в [minVal, maxVal) по проектору:
-//   Key Projector(const T&)
-// Возвращает IDictionary<Range<Key>, int>*.
 
 template <typename T, typename Key>
 struct HistogramParams {
@@ -372,10 +353,7 @@ BuildHistogram(ArraySequence<T>* seq, const HistogramParams<T,Key>& par) {
     return dict;
 }
 
-// ------------------------------ Пример -----------------
 struct Person { int age; };
-// could write lambda to extract age from Person inside BuildHistogram
-// and pass lambda to the function (add argument to BuildHistogram)
 static int ProjectAge(const Person& p) { return p.age; }
 
 int main() {
